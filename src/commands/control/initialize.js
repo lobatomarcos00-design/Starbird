@@ -1,178 +1,107 @@
 // src/commands/control/initialize.js
-const { PermissionsBitField } = require('discord.js');
+const { PermissionsBitField, ChannelType } = require('discord.js');
 const config = require('../../utils/config');
+const { performServerSetup } = require('../../utils/serverSetup');
 const { createLogger } = require('../../utils/logger');
 const logger = createLogger('COMMAND:initialize');
 
-/**
- * Deletes all messages in a text channel (handles bulk delete limits).
- */
-async function clearChannel(channel) {
-  if (!channel.manageable) return;
-  let messages;
-  do {
-    messages = await channel.messages.fetch({ limit: 100 });
-    if (messages.size > 0) {
-      await channel.bulkDelete(messages, true).catch(() => {});
-    }
-  } while (messages.size >= 100);
-}
-
-/**
- * Ensure the default role exists (or create one named 'member').
- */
-async function ensureDefaultRole(guild) {
-  const guildId = guild.id;
-  let roleId = config.get(`defaultRole_${guildId}`);
-  if (roleId) {
-    const role = guild.roles.cache.get(roleId);
-    if (role) return role;
-  }
-
-  const role = await guild.roles.create({
-    name: 'member',
-    color: '9b59b6',
-    hoist: true,
-    permissions: [],
-    reason: 'Default role for new members (auto-created)',
-  });
-
-  try {
-    await role.setPosition(1);
-  } catch (err) {
-    logger.warn(`Could not set default role position: ${err.message}`);
-  }
-
-  config.set(`defaultRole_${guildId}`, role.id);
-  return role;
-}
-
-/**
- * Lock all channels so only the default role can interact.
- */
-async function lockChannelsToDefaultRole(guild, defaultRole) {
-  const channels = guild.channels.cache.filter(c => c.type === 0 || c.type === 2);
-  const everyoneId = guild.roles.everyone.id;
-  const defaultRoleId = defaultRole.id;
-
-  for (const [, channel] of channels) {
-    try {
-      const overwrites = channel.permissionOverwrites.cache.map(o => o.toJSON());
-      const filtered = overwrites.filter(o => o.id !== everyoneId && o.id !== defaultRoleId);
-
-      // Deny @everyone
-      filtered.push({
-        id: everyoneId,
-        deny: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.Speak,
-        ],
-        allow: [],
-      });
-
-      // Allow default role
-      filtered.push({
-        id: defaultRoleId,
-        allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.Speak,
-        ],
-        deny: [],
-      });
-
-      await channel.edit({ permissionOverwrites: filtered });
-      logger.info(`Locked channel ${channel.name}`);
-    } catch (err) {
-      logger.error(`Failed to lock channel ${channel.name}: ${err.message}`);
-    }
-  }
-}
-
 module.exports = {
   name: 'initialize',
-  description: 'Run the full server setup (Meteion role, stats channel, default role, channel lockdown).',
+  description: 'Run the full server setup (Meteion role, stats, default role, lockdown).',
   requiredPermissions: ['ManageGuild'],
   async execute(message, args) {
     const guild = message.guild;
     const botMember = guild.members.me;
-    logger.info(`Initialize triggered by ${message.author.tag} in ${guild.name}`);
 
-    // Permission checks
-    if (!botMember.permissions.has('ManageRoles')) {
-      return message.channel.send('<:Negative:1508838218043363419> I need **Manage Roles** permission.');
-    }
-    if (!botMember.permissions.has('ManageChannels')) {
-      return message.channel.send('<:Negative:1508838218043363419> I need **Manage Channels** permission.');
+    // --- Bot permission check ---
+    const requiredBotPerms = ['ManageRoles', 'ManageChannels'];
+    const missing = requiredBotPerms.filter(perm => !botMember.permissions.has(perm));
+    if (missing.length > 0) {
+      return message.channel.send(
+        `❌ I'm missing these permissions: **${missing.join(', ')}**.\n` +
+        `Make sure my role has them and is placed above the roles I need to manage.`
+      );
     }
 
-    const statusMessages = [];
+    let status = [];
     try {
-      // -- Meteion role --
-      let meteionRole = guild.roles.cache.find(r => r.name === 'Meteion');
-      if (!meteionRole) {
-        meteionRole = await guild.roles.create({
-          name: 'Meteion',
-          color: '215db1',
-          hoist: false,
-          permissions: [],
-          reason: 'Bot admin role (initialization)',
-        });
-        try {
-          const botHighest = botMember.roles.highest;
-          if (botHighest) await meteionRole.setPosition(Math.max(1, botHighest.position - 1));
-        } catch (err) {
-          logger.warn(`Could not set Meteion position: ${err.message}`);
+      // --- Meteion role ---
+      try {
+        let role = guild.roles.cache.find(r => r.name === 'Meteion');
+        if (!role) {
+          role = await guild.roles.create({
+            name: 'Meteion',
+            color: '215db1',
+            hoist: false,
+            permissions: [],
+            reason: 'Bot admin role (initialization)',
+          });
+          try {
+            const botHighest = botMember.roles.highest;
+            if (botHighest) await role.setPosition(Math.max(1, botHighest.position - 1));
+          } catch (err) {
+            logger.warn(`Could not set Meteion position: ${err.message}`);
+          }
+          status.push('<:Positive:1508838207838486579> Meteion role created.');
+        } else {
+          status.push('ℹ️ Meteion role already exists.');
         }
-        statusMessages.push('<:Positive:1508838207838486579> Meteion role created.');
-      } else {
-        statusMessages.push('ℹ️ Meteion role already exists.');
-      }
-      if (!botMember.roles.cache.has(meteionRole.id)) {
-        await botMember.roles.add(meteionRole);
-      }
-
-      // -- Statistics channel --
-      const statsName = '📊-statistics';
-      let statsChannel = guild.channels.cache.find(c => c.name === statsName && c.type === 0);
-      if (statsChannel) {
-        await clearChannel(statsChannel).catch(() => {});
-        statusMessages.push('ℹ️ Statistics channel cleared.');
-      } else {
-        statsChannel = await guild.channels.create({
-          name: statsName,
-          type: 0,
-          permissionOverwrites: [{ id: guild.id, deny: [PermissionsBitField.Flags.SendMessages] }],
-          reason: 'Server statistics',
-        });
-        statusMessages.push('<:Positive:1508838207838486579> Statistics channel created.');
+        if (!botMember.roles.cache.has(role.id)) {
+          await botMember.roles.add(role);
+        }
+      } catch (err) {
+        logger.error(`Meteion role error: ${err}`);
+        return message.channel.send('❌ Failed to create/manage the **Meteion** role. Check my permissions and role position.');
       }
 
-      const embed = {
-        color: 0x215db1,
-        title: '📊 Server Statistics',
-        description: 'No data yet.',
-        footer: { text: `Last updated: ${new Date().toLocaleString()}` },
-      };
-      const msg = await statsChannel.send({ embeds: [embed] });
-      config.set(`statsChannel_${guild.id}`, statsChannel.id);
-      config.set(`statsMessage_${guild.id}`, msg.id);
+      // --- Statistics channel ---
+      try {
+        const statsName = '📊-statistics';
+        let statsChannel = guild.channels.cache.find(c => c.name === statsName && c.type === ChannelType.GuildText);
+        if (statsChannel) {
+          // Clear existing
+          const messages = await statsChannel.messages.fetch({ limit: 100 });
+          if (messages.size > 0) await statsChannel.bulkDelete(messages, true).catch(() => {});
+          status.push('ℹ️ Statistics channel cleared.');
+        } else {
+          statsChannel = await guild.channels.create({
+            name: statsName,
+            type: ChannelType.GuildText,
+            permissionOverwrites: [{ id: guild.id, deny: [PermissionsBitField.Flags.SendMessages] }],
+            reason: 'Server statistics',
+          });
+          status.push('<:Positive:1508838207838486579> Statistics channel created.');
+        }
 
-      // -- Default role & lockdown --
-      const defaultRole = await ensureDefaultRole(guild);
-      statusMessages.push(`<:Positive:1508838207838486579> Default role: ${defaultRole.name}`);
+        const embed = {
+          color: 0x215db1,
+          title: '📊 Server Statistics',
+          description: 'No data yet.',
+          footer: { text: `Last updated: ${new Date().toLocaleString()}` },
+        };
+        const msg = await statsChannel.send({ embeds: [embed] });
+        config.set(`statsChannel_${guild.id}`, statsChannel.id);
+        config.set(`statsMessage_${guild.id}`, msg.id);
+      } catch (err) {
+        logger.error(`Stats channel error: ${err}`);
+        return message.channel.send('❌ Failed to set up the **statistics channel**. Check my permissions and channel position.');
+      }
 
-      await lockChannelsToDefaultRole(guild, defaultRole);
-      statusMessages.push('<:Positive:1508838207838486579> Channels locked to default role.');
+      // --- Default role and channel lockdown (using shared setup) ---
+      try {
+        await performServerSetup(guild);   // this will handle default role & lockdown
+        status.push('<:Positive:1508838207838486579> Default role & channels locked.');
+      } catch (err) {
+        logger.error(`Lockdown error: ${err}`);
+        return message.channel.send('❌ Failed during **channel lockdown**. Make sure my role can manage channel permissions.');
+      }
 
-      await message.channel.send('<:moon:1508838061885362186> **Server initialization complete:**\n' + statusMessages.join('\n'));
+      config.set(`setupDone_${guild.id}`, true);
+      await message.channel.send('<:star:1508838174305030306> **Server initialization complete:**\n' + status.join('\n'));
       logger.info(`Initialize completed in ${guild.name}`);
-    } catch (error) {
-      logger.error('Initialize failed:', error);
-      await message.channel.send('<:Negative:1508838218043363419> Initialization failed. Check the console for details.');
+    } catch (err) {
+      logger.error('Initialize crashed:', err);
+      await message.channel.send('❌ An unexpected error occurred. Check the console.');
     }
   },
 };

@@ -149,6 +149,37 @@ function getEntriesByKeyPrefix(prefix, guildId) {
   return data.filter(entry => entry.guildId === guildId && entry.key.startsWith(prefix));
 }
 
+/**
+ * Store the start time of a voice session.
+ * @param {string} guildId
+ * @param {string} userId
+ * @param {number} startTime - epoch milliseconds
+ */
+function setVoiceSession(guildId, userId, startTime) {
+  const key = `voice_session_${guildId}_${userId}`;
+  upsertEntry(key, guildId, userId, String(startTime));
+}
+
+/**
+ * Retrieve the start time of a voice session (in epoch ms).
+ * Returns null if no session is stored.
+ */
+function getVoiceSession(guildId, userId) {
+  const key = `voice_session_${guildId}_${userId}`;
+  const entries = getEntriesByKey(key, guildId);
+  if (entries.length === 0) return null;
+  const startTime = Number(entries[0].value);
+  return isNaN(startTime) ? null : startTime;
+}
+
+/**
+ * Remove a stored voice session.
+ */
+function deleteVoiceSession(guildId, userId) {
+  const key = `voice_session_${guildId}_${userId}`;
+  deleteEntry(key, guildId);
+}
+
 module.exports = {
   addEntry,
   getEntriesByKey,
@@ -159,4 +190,7 @@ module.exports = {
   upsertEntry,
   findLowestAvailableKey,
   getEntriesByKeyPrefix,
+  setVoiceSession,
+  getVoiceSession,
+  deleteVoiceSession,
 };

@@ -13,6 +13,11 @@ module.exports = {
     // Track message count
     try {
       incrementEntry(`msg_${message.guild.id}`, message.guild.id, message.author.id, 1);
+      // In messageCreate.js, after incrementEntry(`msg_${message.guild.id}`...)
+      const { addMessage, conditionalUpdate } = require('../utils/statsUpdater');
+      if (addMessage(message.guild.id)) {
+        conditionalUpdate(message.guild).catch(() => { });
+      }
     } catch (err) {
       logger.error('Failed to increment msg count:', err);
     }
