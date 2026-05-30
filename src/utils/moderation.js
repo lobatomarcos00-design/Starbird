@@ -133,6 +133,16 @@ async function muteUser(guild, member, channelId) {
     await member.roles.add(role, 'Automated moderation: second offense');
   }
 
+  // Disconnect from voice if currently connected
+  if (member.voice.channel) {
+    try {
+      await member.voice.disconnect('Muted – removed from voice');
+      logger.info(`[${guild.name}] Disconnected ${member.user.tag} from voice`);
+    } catch (err) {
+      logger.error(`[${guild.name}] Failed to disconnect ${member.user.tag} from voice: ${err.message}`);
+    }
+  }
+
   // Save mute data: until timestamp, default role ID, and source channel
   const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const muteData = JSON.stringify({
@@ -283,8 +293,8 @@ async function checkDuplicate(message) {
     if (maxRepeats > 5) return 'Repeated Word Spam';
   }
   const key = `${message.guild.id}-${message.author.id}`;
-  const recent = addAndGetLastMessages(key, content, 4);
-  if (recent.length === 4 && new Set(recent).size === 1) return 'Duplicate Message Spam';
+  const recent = addAndGetLastMessages(key, content, 5);
+  if (recent.length === 5 && new Set(recent).size === 1) return 'Duplicate Message Spam';
   return null;
 }
 
@@ -357,7 +367,7 @@ async function moderateMessage(message) {
   setWarnCount(guild.id, userId, warnCount);
 
   let silencedApplied = false;
-  if (warnCount >= 2) {
+  if (warnCount >= 3) {
     const member = message.member;
     if (member) {
       await muteUser(guild, member, message.channel.id);
