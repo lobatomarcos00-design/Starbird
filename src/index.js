@@ -64,3 +64,4 @@ client.login(token).catch(err => {
   logger.error('Failed to login:', err);
   process.exit(1);
 });
+printf('Bot is starting...');
